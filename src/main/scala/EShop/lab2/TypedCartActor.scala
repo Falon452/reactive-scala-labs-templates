@@ -37,6 +37,7 @@ class TypedCartActor {
       case AddItem(item) =>
         nonEmpty(Cart(Seq(item)), scheduleTimer(context))
     }
+
   )
 
   def nonEmpty(cart: Cart, timer: Cancellable): Behavior[TypedCartActor.Command] = Behaviors.receive(
