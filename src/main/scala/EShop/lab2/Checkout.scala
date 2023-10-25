@@ -97,7 +97,7 @@ class Checkout extends Actor {
 
   def closed: Receive = {
     _ =>
-      println("closed")
+      println("Closed")
       context.stop(self)
   }
 
