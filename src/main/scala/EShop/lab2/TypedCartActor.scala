@@ -1,11 +1,12 @@
 package EShop.lab2
 
+import EShop.lab3.OrderManager
 import akka.actor.Cancellable
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior}
-import scala.language.postfixOps
 
 import scala.concurrent.duration._
+import scala.language.postfixOps
 
 object TypedCartActor {
 
@@ -13,10 +14,11 @@ object TypedCartActor {
   case class AddItem(item: Any)        extends Command
   case class RemoveItem(item: Any)     extends Command
   case object ExpireCart               extends Command
-  case object StartCheckout            extends Command
+  case class StartCheckout(orderManagerRef: ActorRef[OrderManager.Command]) extends Command
   case object ConfirmCheckoutCancelled extends Command
   case object ConfirmCheckoutClosed    extends Command
 
+  case class GetItems(sender: ActorRef[Cart]) extends Command // visible for testing
   sealed trait Event
   case class CheckoutStarted(checkoutRef: ActorRef[TypedCheckout.Command]) extends Event
 }
@@ -36,6 +38,9 @@ class TypedCartActor {
     (context, msg) => msg match {
       case AddItem(item) =>
         nonEmpty(Cart(Seq(item)), scheduleTimer(context))
+      case GetItems(sender) =>
+        sender ! Cart(Seq())
+        Behaviors.same
     }
 
   )
@@ -49,18 +54,26 @@ class TypedCartActor {
       case RemoveItem(item) if cart.contains(item) && cart.size > 1 =>
         timer.cancel()
         nonEmpty(cart.removeItem(item), scheduleTimer(context))
+
       case RemoveItem(item) if cart.contains(item) =>
         timer.cancel()
         empty
 
-      case StartCheckout =>
+      case StartCheckout(orderManagerRef) =>
         timer.cancel()
+        val checkout = context.spawn(new TypedCheckout().start, "checkout")
+        orderManagerRef ! OrderManager.ConfirmCheckoutStarted(checkout)
+        checkout ! TypedCheckout.StartCheckout
         inCheckout(cart)
 
       case ExpireCart =>
         timer.cancel()
         println("ExpireCart")
         empty
+
+      case GetItems(sender) =>
+        sender ! cart
+        Behaviors.same
     }
   )
 

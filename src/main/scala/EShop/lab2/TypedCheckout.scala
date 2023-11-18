@@ -1,5 +1,6 @@
 package EShop.lab2
 
+import EShop.lab3.TypedPayment
 import akka.actor.Cancellable
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import akka.actor.typed.{ActorRef, Behavior}
@@ -10,22 +11,24 @@ import scala.language.postfixOps
 object TypedCheckout {
 
   sealed trait Data
-  case object Uninitialized                               extends Data
-  case class SelectingDeliveryStarted(timer: Cancellable) extends Data
-  case class ProcessingPaymentStarted(timer: Cancellable) extends Data
 
   sealed trait Command
   case object StartCheckout                       extends Command
   case class SelectDeliveryMethod(method: String) extends Command
   case object CancelCheckout                      extends Command
   case object ExpireCheckout                      extends Command
-  case class SelectPayment(payment: String)       extends Command
+
+  case class SelectPayment(payment: String,
+                           orderManagerPaymentEventHandler: ActorRef[TypedPayment.Event],
+                           orderManagerCheckoutEventHandler: ActorRef[TypedCheckout.Event]) extends Command
   case object ExpirePayment                       extends Command
   case object ConfirmPaymentReceived              extends Command
 
   sealed trait Event
-  case object CheckOutClosed                        extends Event
-  case class PaymentStarted(payment: ActorRef[Any]) extends Event
+
+  case object CheckOutClosed extends Event
+
+  case class PaymentStarted(paymentRef: ActorRef[TypedPayment.Command]) extends Event
 }
 
 class TypedCheckout {
@@ -33,8 +36,9 @@ class TypedCheckout {
 
   var deliveryMethod = ""
   var paymentMethod = ""
-  val checkoutTimerDuration: FiniteDuration = 1 seconds
-  val paymentTimerDuration: FiniteDuration  = 1 seconds
+  private val checkoutTimerDuration: FiniteDuration = 10 seconds
+  private val paymentTimerDuration: FiniteDuration  = 10 seconds
+  var paymentMapper: ActorRef[TypedPayment.Event] = _
 
   private def checkoutTimer(context: ActorContext[Command]): Cancellable =
     context.scheduleOnce(checkoutTimerDuration, context.self, ExpireCheckout)
@@ -48,9 +52,10 @@ class TypedCheckout {
     }
   )
 
-  def selectingDelivery(timer: Cancellable): Behavior[TypedCheckout.Command] = Behaviors.receive(
+  private def selectingDelivery(timer: Cancellable): Behavior[TypedCheckout.Command] = Behaviors.receive(
     (context, msg) => msg match {
       case SelectDeliveryMethod(method: String) =>
+        println("selecting payment method")
         this.deliveryMethod = method
         timer.cancel()
         selectingPaymentMethod(checkoutTimer(context))
@@ -66,11 +71,17 @@ class TypedCheckout {
     }
   )
 
-  def selectingPaymentMethod(timer: Cancellable): Behavior[TypedCheckout.Command] = Behaviors.receive(
+  private def selectingPaymentMethod(timer: Cancellable): Behavior[TypedCheckout.Command] = Behaviors.receive(
     (context, msg) => msg match {
-      case SelectPayment(method: String) =>
+      case SelectPayment(method: String, orderManagerPaymentEventHandler, orderManagerCheckoutEventHandler) =>
+        println("Select payment checkout")
         this.paymentMethod = method
         timer.cancel()
+
+        val payment = new TypedPayment(method, orderManagerPaymentEventHandler, paymentMapper)
+
+        val paymentRef = context.spawn(payment.start, "payment")
+        orderManagerCheckoutEventHandler ! TypedCheckout.PaymentStarted(paymentRef = paymentRef)
         processingPayment(paymentTimer(context))
 
       case ExpireCheckout =>
@@ -84,7 +95,7 @@ class TypedCheckout {
     }
   )
 
-  def processingPayment(timer: Cancellable): Behavior[TypedCheckout.Command] = Behaviors.receive(
+  private def processingPayment(timer: Cancellable): Behavior[TypedCheckout.Command] = Behaviors.receive(
     (_, msg) => msg match {
       case ConfirmPaymentReceived =>
         timer.cancel()
@@ -101,13 +112,13 @@ class TypedCheckout {
     }
   )
 
-  def cancelled: Behavior[TypedCheckout.Command] = Behaviors.receive(
+  private def cancelled: Behavior[TypedCheckout.Command] = Behaviors.receive(
     (_, _) => {
       Behaviors.same
     }
   )
 
-  def closed: Behavior[TypedCheckout.Command] = Behaviors.receive(
+  private def closed: Behavior[TypedCheckout.Command] = Behaviors.receive(
     (_, _) => {
       println("Checkout closed")
       Behaviors.same
